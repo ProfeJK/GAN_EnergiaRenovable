@@ -1,0 +1,180 @@
+# Reporte de Correcciones - GAN_EnergiaRenovable
+
+## 📆 Fecha: Abril 2025
+## 🧠 Contexto:
+Proyecto de entrenamiento de modelos GAN con Generadores basados en Ecuaciones Diferenciales Estocásticas (SDEs), integrando ruido + características temporales como entrada.
+
+---
+
+Este informe documenta las principales correcciones realizadas al proyecto `GAN_EnergiaRenovable`, centrado en el modelo SDE-GAN. Se detallan los cambios realizados desde el reemplazo del modelo `MLP` por `FFNN`, su impacto y las razones técnicas que motivaron cada modificación.
+
+---
+
+## 1. Reemplazo de `MLP` por `FFNN`
+
+### Cambio realizado:
+- Se reemplazaron todas las instancias del modelo `MLP` por `FFNN` (Fully-Connected Feedforward Neural Network) en los archivos `sde.py`, `sde_gan.py` y `layers.py`.
+- Se modificaron las importaciones correspondientes:
+  ```python
+  from models.layers import FFNN as MLP
+  ```
+
+### Motivo:
+- La clase `MLP` original no estaba implementada en el archivo `layers.py`, lo cual generaba errores de importación.
+- `FFNN` fue identificado como el nuevo nombre funcional del modelo que implementa redes neuronales multi-capa, con configuración modular mediante `FFNNConfig`.
+
+### Implicaciones:
+- Permite una parametrización más clara del modelo mediante objetos `FFNNConfig`.
+- Unifica el código bajo un esquema más mantenible.
+
+---
+
+## 2. Configuración de Entrada en `embed_config`
+
+### Cambio realizado:
+- Se ajustó el parámetro `in_size` en `gen_embed_config`:
+  ```python
+  in_size = gen_noise_size + time_features_size
+  ```
+
+### Motivo:
+- El modelo `FFNN` espera que su entrada incluya tanto el ruido latente como las características temporales.
+- Sin esta corrección, el modelo arrojaba errores de dimensiones (`mat1 and mat2 shapes cannot be multiplied`).
+
+### Implicaciones:
+- El generador ahora puede aprender funciones condicionales al tiempo.
+- El entrenamiento del modelo es coherente con su arquitectura definida.
+
+---
+
+## 3. Corrección en el `forward()` de `Generator`
+
+### Cambio realizado:
+- Se modificó la entrada al modelo de embed en el forward del `Generator`:
+  ```python
+  t0 = ts[0].expand(batch_size, 1)
+  init_input = torch.cat([init_noise, t0], dim=1)
+  x0 = self._initial(init_input)
+  ```
+
+### Motivo:
+- El modelo embed requiere información temporal concatenada al ruido para construir el estado inicial de la SDE.
+
+### Implicaciones:
+- Soluciona errores de multiplicación de matrices.
+- El modelo puede entrenar correctamente sin desajustes de entrada.
+
+---
+
+## 4. Ajustes en `get_sde_dataloader`
+
+### Cambio realizado:
+- Se modificó la función para aceptar `time_features` como argumento y para usar la ruta absoluta del dataset.
+- Se corrigieron advertencias de pandas con `.loc[]`.
+
+### Motivo:
+- Se requería acceso correcto al dataset desde Google Drive y compatibilidad con datos dependientes del tiempo.
+
+### Implicaciones:
+- Asegura que el preprocesamiento de datos incluya correctamente las características temporales.
+- Mejora la portabilidad del código en diferentes entornos.
+
+---
+
+## 5. Correcciones en `Discriminator`
+
+### Cambio realizado:
+- Se reescribió el `Discriminator` para usar correctamente la clase `FFNN` y el `FFNNConfig`.
+
+### Motivo:
+- Consistencia con el nuevo esquema de modelos definidos en `layers.py`.
+
+### Implicaciones:
+- El discriminador puede ser inicializado de forma modular.
+- Facilita el mantenimiento y pruebas independientes.
+
+---
+
+## 6. 🧨 Error original
+
+**Mensaje:**
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (64x1 and 2x16)
+
+**Causa:**
+El `Generator` recibía un tensor `[64, 1]` pero su red inicial esperaba `[64, 2]`. Esto causaba un fallo en `Linear(in=2, out=16)`.
+
+---
+
+## 7. ✅ Corrección en `trainer.py`
+
+**Archivo modificado:** `training/trainer.py`
+
+**Cambios:**
+- Se generó `self._fixed_latents` como la concatenación de `noise` y `time_features`:
+
+    noise = torch.randn(64, self.G._initial_noise_size).to(self.device)
+    time_features = torch.full((64, 1), 0.5).to(self.device)
+    self._fixed_latents = torch.cat([noise, time_features], dim=1)
+
+**Impacto:** Se resuelve el error de forma del tensor, permitiendo generación consistente de muestras durante el entrenamiento.
+
+---
+
+## 8. ✅ Adaptación del método `Generator.forward()`
+
+**Archivo modificado:** `models/sde.py`
+
+**Cambio realizado:**
+- El método `forward()` ahora divide el `latent` en `noise` y `time`:
+
+    noise = init_latent[:, :-1]
+    time = init_latent[:, -1:]
+    x0 = self._initial(noise)
+
+**Impacto:** Se mantiene coherencia entre las dimensiones del vector latente y lo que espera la red inicial.
+
+---
+
+## 9. ✅ Ajuste del `embed_config`
+
+**Archivo modificado:** `train_sdegan.py` (antes `sde.py` raíz)
+
+**Cambio:**
+- Se modificó `embed_config.in_size = 2` a `1`:
+
+    gen_noise_embed_config = FFNNConfig(
+        in_size=1,  # corregido desde 2
+        ...
+    )
+
+**Impacto:** Coincide con la entrada real (solo ruido) usada por la red inicial del generador.
+
+---
+
+## 10. ✅ Organización del proyecto
+
+**Cambios sugeridos:**
+- `models/sde.py` → módulo oficial con arquitectura
+- `sde.py` raíz → renombrado a `train_sdegan.py` para evitar confusión
+
+---
+
+## 11. 🔄 Flujo estandarizado de `latent = noise + time`
+
+- El `latent` se genera concatenando ruido + tiempo
+- El `Generator` lo divide internamente
+- La red inicial usa solo `noise`
+- Las funciones `drift`, `diffusion`, `readout` pueden usar ambos
+
+---
+
+## ✅ Resultado final
+
+- Modelo funcional sin errores de forma
+- Entrenamiento reproducible
+- Flujo de datos coherente
+- Base sólida para documentación y futuras mejoras
+
+---
+
+_Archivo generado automáticamente para control de cambios y documentación del repositorio GitHub._
